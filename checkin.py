@@ -1,5 +1,4 @@
 import requests
-import json
 import os
 import logging
 from enum import Enum
@@ -98,6 +97,9 @@ class Config:
     ENV_COOKIES = "GLADOS_COOKIES"
     ENV_EXCHANGE_PLAN = "GLADOS_EXCHANGE_PLAN"
     ENV_VERBOSE = "GLADOS_VERBOSE"
+    ENV_USER_AGENT = "GLADOS_USER_AGENT"
+
+    DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36"
 
     """默认兑换计划"""
     DEFAULT_EXCHANGE_PLAN = "plan500"
@@ -120,6 +122,7 @@ class Config:
         self.cookies_list: List[str] = []
         self.exchange_plan: str = self.DEFAULT_EXCHANGE_PLAN
         self.verbose: bool = self.DEFAULT_VERBOSE
+        self.user_agent: str = self.DEFAULT_USER_AGENT
         self._load_config()
 
     def _load_config(self) -> None:
@@ -128,6 +131,10 @@ class Config:
         raw_cookies_env: Optional[str] = os.environ.get(self.ENV_COOKIES)
         exchange_plan_env: Optional[str] = os.environ.get(self.ENV_EXCHANGE_PLAN)
         verbose_env: Optional[str] = os.environ.get(self.ENV_VERBOSE)
+        user_agent_env = os.environ.get(self.ENV_USER_AGENT, "").strip()
+        self.user_agent = user_agent_env or self.DEFAULT_USER_AGENT
+        if not user_agent_env:
+            logger.warning(f"{LogEmoji.WARNING} 未配置 {self.ENV_USER_AGENT}，使用默认 UA；设备校验失败时请更新同一次登录的 Cookie 和浏览器 UA。")
 
         if not push_key_env:
             logger.warning(f"{LogEmoji.WARNING} 环境变量 '{self.ENV_PUSH_KEY}' 未设置。")
@@ -178,10 +185,11 @@ class API:
     POINTS_URL = APIEndpoint.POINTS.value
     EXCHANGE_URL = APIEndpoint.EXCHANGE.value
 
-    def __init__(self, domain: str, cookie_index: int = 0, verbose: bool = False):
+    def __init__(self, domain: str, cookie_index: int = 0, verbose: bool = False, user_agent: str = Config.DEFAULT_USER_AGENT):
         self.domain: str = domain
         self.cookie_index: int = cookie_index
         self.verbose: bool = verbose
+        self.user_agent: str = user_agent
         self.headers: Dict[str, str] = self._get_headers()
         self.session = requests.Session()
         self.session.headers.update(self.headers)
@@ -211,7 +219,7 @@ class API:
         """获取请求头"""
         return {
             "origin": f"https://{self.domain}",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36",
+            "user-agent": self.user_agent,
         }
 
     def _log(self, level: str, emoji: str, message: str, force: bool = False) -> None:
@@ -238,7 +246,7 @@ class API:
 
         try:
             if method.upper() == "POST":
-                response = self.session.post(url, headers=session_headers, data=json.dumps(data), timeout=(60, 120))
+                response = self.session.post(url, headers=session_headers, json=data, timeout=(60, 120))
             elif method.upper() == "GET":
                 response = self.session.get(url, headers=session_headers, timeout=(60, 120))
             else:
@@ -455,7 +463,7 @@ class Checker:
     def _checkin_on_domain(self, cookie: str, cookie_idx: int, domain: str) -> CheckinResult:
         result = CheckinResult(cookie_idx, domain)
 
-        with API(domain, cookie_idx, verbose=self.config.verbose) as api:
+        with API(domain, cookie_idx, verbose=self.config.verbose, user_agent=self.config.user_agent) as api:
             # 1. 获取状态
             self._log(cookie_idx, domain, LogEmoji.STATUS, "查询剩余天数")
             days_str, status_code = api.get_status(cookie)
@@ -483,6 +491,18 @@ class Checker:
             result.exchange = api.exchange(cookie, self.config.exchange_plan, required_points)
 
         return result
+
+    def has_failures(self) -> bool:
+        """每个 Cookie 至少在一个域名签到成功或今日已签到，才算通过。"""
+        accepted_cookies = {
+            result.cookie_index
+            for result in self.results
+            if result.code in (CheckinStatus.SUCCESS, CheckinStatus.REPEAT)
+        }
+        return not self.config.cookies_list or any(
+            index not in accepted_cookies
+            for index in range(1, len(self.config.cookies_list) + 1)
+        )
 
     def get_results(self) -> List[Dict[str, str]]:
         """获取所有结果"""
@@ -519,8 +539,10 @@ class Checker:
 logger = init_logger()
 
 
-def main():
+def main() -> int:
     """主函数"""
+    config = None
+    exit_code = 1
     try:
         # 1. 加载配置
         logger.info(f"{LogEmoji.START} 步骤 1: 加载配置")
@@ -534,6 +556,7 @@ def main():
             logger.info(f"{LogEmoji.START} 步骤 2: 执行签到")
             checker = Checker(config)
             checker.checkin_all()
+            exit_code = 1 if checker.has_failures() else 0
 
             # 3. 格式化结果
             logger.info(f"{LogEmoji.START} 步骤 3: 格式化结果")
@@ -541,15 +564,18 @@ def main():
             logger.info(f"\n{LogEmoji.END}========== 签到总结 ==========\n{title}\n{log_content}")
 
     except Exception as e:
+        exit_code = 1
         logger.error(f"{LogEmoji.ERROR} 主程序执行过程中发生未预期的错误: {e}")
         title, content, log_content = "# 脚本执行出错", str(e), str(e)
 
     # 4. 发送推送
     logger.info(f"{LogEmoji.START} 步骤 4: 发送推送")
-    push_service = PushService(config if "config" in locals() else "")
-    push_service.send(title, content)
+    if config is not None:
+        push_service = PushService(config)
+        push_service.send(title, content)
     logger.info(f"{LogEmoji.END} 签到完成")
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

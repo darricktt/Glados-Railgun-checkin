@@ -50,10 +50,12 @@ jobs:
       env:
         PUSHDEER_SENDKEY: ${{ secrets.PUSHDEER_SENDKEY }}
         GLADOS_COOKIES: ${{ secrets.GLADOS_COOKIES }}
+        GLADOS_USER_AGENT: ${{ secrets.GLADOS_USER_AGENT }}
         GLADOS_EXCHANGE_PLAN: ${{ secrets.GLADOS_EXCHANGE_PLAN }}
         GLADOS_VERBOSE: ${{ secrets.GLADOS_VERBOSE }}
 
     - name: Keep alive
+      if: ${{ !cancelled() }}
       uses: liskin/gh-workflow-keepalive@v1 
         
     - name: Delete workflow runs
