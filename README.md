@@ -72,6 +72,7 @@
 
 - **2026-01**: 重构代码，添加log输出方便定位，支持新版网址，支持配置积分兑换策略。
 - **2026-04**: 优化代码逻辑，优化日志输出，支持[新版域名](https://railgun.info) ，在 GLADOS_COOKIES 中添加新版域名下的 cookies 即可使用。
+- **2026-11-13**: 按当前官网分别适配 GLaDOS challenge／proof 和 Railgun token 签到流程，识别重复签到及 Turnstile 验证，签到失败后停止兑换。官网来源、哈希与验证范围见[流程核对记录](docs/checkin-flow-2026-11-13.md)。
 
 
 ## 问题排查与定位
@@ -79,6 +80,10 @@
 
 - HTTP 200 或 Actions 步骤执行完毕不等于签到成功。脚本按 Cookie 判定退出状态：每个 Cookie 至少在 `glados.cloud`、`railgun.info` 中的一个域名成功或今日已签到，才返回 `0`；任一 Cookie 在两个域名均失败、没有 Cookie 或执行异常时返回 `1`，Actions 显示失败。汇总中的成功／失败／重复数量仍按域名任务统计。
 - 兑换请求以 `application/json` 发送 `planType`，避免服务端因缺少 JSON Content-Type 返回 `Plan type is required`。
+- GLaDOS 每次签到先获取新的 challenge，等待至少 2.5 秒（脚本预留为 2.7 秒）后，向同一域名提交 nonce／proof。验证缺失、无效、过期或要求 Turnstile 时明确失败，不退回仅发送 token 的旧流程。Railgun 当前官网仍只发送 token，脚本按其独立流程处理。
+- 日志提示 Turnstile 时，请到官网完成当次签到；刷新 Cookie 或改 UA 不能代替该验证。失败原因会进入汇总，脚本不提交伪造的 Turnstile token。
+- 首次签到获得 1／2 分仍算成功。GLaDOS 官网根据服务端返回的 `breakdown.freeCap` 显示免费账号上限；适配流程不承诺固定奖励或补发积分。请核对官网积分流水和账号提示。
+- 只有签到成功或正常重复，且积分查询通过、余额达到当前兑换阈值时，脚本才发起兑换。
 - 离线验证：安装 workflow 中已有的 `requests`、`pypushdeer` 依赖后运行 `python -m unittest discover -s tests -v`。测试使用模拟响应，不签到、不兑换、不发送推送。
 
   <img width="1684" height="844" alt="image" src="https://github.com/user-attachments/assets/45348a5f-43e4-45f5-8fdf-ce84d343b30d" />

@@ -1,5 +1,8 @@
 import requests
 import os
+import hashlib
+import math
+import time
 import logging
 from enum import Enum
 from typing import Dict, List, Optional, Tuple, Union
@@ -28,6 +31,7 @@ class APIEndpoint(Enum):
     """API端点"""
 
     CHECKIN = "/api/user/checkin"
+    CHALLENGE = "/api/user/checkin/challenge"
     STATUS = "/api/user/status"
     POINTS = "/api/user/points"
     EXCHANGE = "/api/user/exchange"
@@ -72,7 +76,7 @@ def log_method(func):
             logger.error(f"{LogEmoji.COOKIE}[{self.cookie_index}] {LogEmoji.DOMAIN}[{self.domain}] {LogEmoji.ERROR} {method_name} 执行失败: {e}")
 
             DEFAULT_ERRORS = {
-                "checkin": {"status": "签到失败", "points": "0", "message": ""},
+                "checkin": {"status": "签到失败", "points": "0", "message": "", "code": CheckinStatus.FAILURE},
                 "get_status": ("None 天", -2),
                 "get_points": ("None 积分", 0),
                 "exchange": "",
@@ -181,6 +185,8 @@ class API:
     """API 调用"""
 
     CHECKIN_URL = APIEndpoint.CHECKIN.value
+    CHALLENGE_URL = APIEndpoint.CHALLENGE.value
+    CHALLENGE_WAIT_SECONDS = 2.7
     STATUS_URL = APIEndpoint.STATUS.value
     POINTS_URL = APIEndpoint.POINTS.value
     EXCHANGE_URL = APIEndpoint.EXCHANGE.value
@@ -246,30 +252,68 @@ class API:
 
         try:
             if method.upper() == "POST":
-                response = self.session.post(url, headers=session_headers, json=data, timeout=(60, 120))
+                response = self.session.post(url, headers=session_headers, json=data, timeout=(60, 120), allow_redirects=False)
             elif method.upper() == "GET":
-                response = self.session.get(url, headers=session_headers, timeout=(60, 120))
+                response = self.session.get(url, headers=session_headers, timeout=(60, 120), allow_redirects=False)
             else:
                 self._log("error", LogEmoji.ERROR, f"不支持的 HTTP 方法: {method}", force=True)
                 return None
 
-            if not response.ok:
-                self._log("warning", LogEmoji.WARNING, f"向 {url} 发起的请求失败，状态码 {response.status_code}。响应内容: {response.text}", force=True)
+            if response.status_code != 200:
+                self._log("warning", LogEmoji.WARNING, f"向 {url} 发起的请求失败，状态码 {response.status_code}。", force=True)
                 return None
             return response
         except requests.exceptions.RequestException as e:
-            self._log("error", LogEmoji.ERROR, f"向 {url} 发起请求时发生网络错误: {e}", force=True)
+            self._log("error", LogEmoji.ERROR, f"向 {url} 发起请求时发生网络错误: {type(e).__name__}", force=True)
             return None
 
-    def _get_checkin_data(self) -> Dict[str, str]:
-        """获取签到数据"""
-        return {"token": self.domain}
+    def _get_checkin_data(self, cookies: str) -> Dict[str, str]:
+        """按各站点当前官网流程生成请求；GLaDOS 验证失败时不降级。"""
+        if self.domain == "railgun.info":
+            return {"token": self.domain}
+        if self.domain != "glados.cloud":
+            raise ValueError("未核对该域名的签到流程")
+
+        response = self._make_request(self._get_full_url(self.CHALLENGE_URL), "GET", cookies=cookies)
+        if response is None:
+            raise ValueError("获取签到 challenge 失败，请检查会话或服务状态")
+        received_at = time.monotonic()
+        try:
+            challenge = response.json()
+        except ValueError:
+            raise ValueError("签到 challenge 不是有效 JSON") from None
+        if not isinstance(challenge, dict) or type(challenge.get("code")) is not int or challenge["code"] != 0:
+            raise ValueError("服务端拒绝签到 challenge，请检查登录会话或在官网验证")
+
+        # JavaScript treats objects/arrays as truthy; malformed metadata must
+        # never be mistaken for a disabled verification widget.
+        turnstile = challenge.get("turnstile")
+        turnstile_disabled = (
+            turnstile is None or turnstile is False or turnstile == ""
+            or type(turnstile) in (int, float) and turnstile == 0
+        )
+        if not turnstile_disabled:
+            raise ValueError("服务端要求 Turnstile 验证，请到官网手动完成签到")
+
+        nonce = challenge.get("nonce")
+        ttl = challenge.get("ttl", 300000)
+        if not isinstance(nonce, str) or not 1 <= len(nonce) <= 4096:
+            raise ValueError("签到 challenge 的 nonce 无效，停止提交")
+        if type(ttl) not in (int, float) or not math.isfinite(ttl) or ttl <= self.CHALLENGE_WAIT_SECONDS * 1000:
+            raise ValueError("签到 challenge 的有效期无效或不足，停止提交")
+
+        proof = hashlib.sha256((nonce + ".glados-observe-v1").encode("utf-8")).hexdigest()
+        time.sleep(self.CHALLENGE_WAIT_SECONDS)
+        elapsed = time.monotonic() - received_at
+        if elapsed < 2.5 or elapsed * 1000 >= ttl:
+            raise ValueError("签到 challenge 等待时间不足或已过期，停止提交")
+        return {"token": self.domain, "nonce": nonce, "proof": proof, "tsState": "off"}
 
     @log_method
     def checkin(self, cookies: str) -> Dict[str, Union[str, CheckinStatus]]:
         """执行签到"""
         url = self._get_full_url(self.CHECKIN_URL)
-        checkin_data = self._get_checkin_data()
+        checkin_data = self._get_checkin_data(cookies)
         response = self._make_request(url, "POST", checkin_data, cookies)
 
         result = {
@@ -281,21 +325,32 @@ class API:
 
         if response:
             data = response.json()
+            if not isinstance(data, dict):
+                raise ValueError("签到响应格式无效")
             code = data.get("code", -2)
-            message = data.get("message", "无消息字段")
+            if type(code) is not int:
+                code = CheckinStatus.FAILURE.value
+            message = str(data.get("message", "无消息字段"))
+            for secret_field in ("nonce", "proof"):
+                secret = checkin_data.get(secret_field)
+                if secret:
+                    message = message.replace(secret, "[redacted]")
+            message = message[:500]
             points = str(data.get("points", 0))
+            repeat = code == 0 and data.get("repeated") is True or (
+                code == 1 and any(marker in message.lower() for marker in (
+                    "repeat! please try tomorrow", "already checked in", "already checked-in", "今日已签到", "今天已经签到",
+                ))
+            )
 
-            if code == CheckinStatus.SUCCESS.value:
+            if type(code) is int and code in (0, 1) and repeat:
+                result.update(code=CheckinStatus.REPEAT, status="重复签到", points="0", message=message)
+                self._log("info", LogEmoji.REPEAT, f"{{ code : {code}, message : {message} }}", force=True)
+            elif type(code) is int and code == CheckinStatus.SUCCESS.value:
                 self._log("info", LogEmoji.SUCCESS, f"{{ code : {code}, points : {points}, message : {message} }}")
                 result["code"] = CheckinStatus.SUCCESS
                 result["status"] = "签到成功"
                 result["points"] = points
-                result["message"] = message
-            elif code == CheckinStatus.REPEAT.value:
-                self._log("info", LogEmoji.REPEAT, f"{{ code : {code}, message : {message} }}", force=True)
-                result["code"] = CheckinStatus.REPEAT
-                result["status"] = "重复签到"
-                result["points"] = "0"
                 result["message"] = message
             else:
                 self._log("info", LogEmoji.FAIL, f"{{ code : {code}, message : {message} }}", force=True)
@@ -345,7 +400,7 @@ class API:
             code = data.get("code", -2)
             points = data.get("points", None)
 
-            if points is not None:
+            if type(code) is int and code == 0 and points is not None:
                 points_int = int(float(points))
                 self._log("info", LogEmoji.SUCCESS, f"{{ code : {code}, points : {points_int} 积分}}")
                 points_str = f"{points_int} 积分"
@@ -391,6 +446,7 @@ class CheckinResult:
     days: str = "None"
     points_total: str = "None"
     exchange: str = "未兑换"
+    message: str = ""
     code: CheckinStatus = CheckinStatus.FAILURE  # 0: 成功, 1: 重复, -2: 失败
 
     def to_dict(self) -> Dict[str, Union[str, CheckinStatus]]:
@@ -474,6 +530,10 @@ class Checker:
             checkin_result = api.checkin(cookie)
             result.status = checkin_result["status"]
             result.code = checkin_result.get("code", CheckinStatus.FAILURE)
+            result.message = checkin_result.get("message", "")
+            result.points = checkin_result.get("points", "0")
+            if result.code == CheckinStatus.FAILURE:
+                return result
 
             # 3. 获取积分
             self._log(cookie_idx, domain, LogEmoji.POINTS, "查询总积分")
@@ -482,13 +542,14 @@ class Checker:
 
             # 4. 执行兑换
             required_points = self.config.EXCHANGE_PLANS.get(self.config.exchange_plan, 500)
-            self._log(
-                cookie_idx,
-                domain,
-                LogEmoji.EXCHANGE,
-                f"开始兑换 {self.config.exchange_plan} (需要 {required_points} 积分)",
-            )
-            result.exchange = api.exchange(cookie, self.config.exchange_plan, required_points)
+            if points_num >= required_points:
+                self._log(
+                    cookie_idx, domain, LogEmoji.EXCHANGE,
+                    f"开始兑换 {self.config.exchange_plan} (需要 {required_points} 积分)",
+                )
+                result.exchange = api.exchange(cookie, self.config.exchange_plan, required_points)
+            else:
+                result.exchange = "积分不足，未兑换"
 
         return result
 
@@ -521,13 +582,14 @@ class Checker:
         send_content_lines = []
         log_content_lines = []
         for i, res in enumerate(results, 1):
-            line = f"#{i} P:{res['points']} 剩余:{res['days']} 总积分:{res['points_total']} | {res['status']} | {res['exchange']}"
+            reason = f" | {res['message']}" if res["code"] == CheckinStatus.FAILURE else ""
+            line = f"#{i} P:{res['points']} 剩余:{res['days']} 总积分:{res['points_total']} | {res['status']} | {res['exchange']}{reason}"
             send_content_lines.append(line)
 
             if self.config.verbose:
                 log_line = line
             else:
-                log_line = f"#{i} {res['status']}"
+                log_line = f"#{i} {res['status']}{reason}"
             log_content_lines.append(log_line)
 
         content = "\n".join(send_content_lines)

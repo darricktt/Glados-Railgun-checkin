@@ -1,0 +1,14 @@
+[
+  {
+    "nonce": "synthetic-nonce",
+    "proof": "95d98116667d20076de5e31eeba57cb65dac0e9be21afb32263bac1178699533"
+  },
+  {
+    "nonce": "nonce-with-unicode-签到-🍰",
+    "proof": "e59549a64b27ca1d241a265f97d2f3d88fede7fe6cb81d5e99eeb1dcf525f46a"
+  },
+  {
+    "nonce": "abc.def_0123456789",
+    "proof": "820633ae7e10405eeb4d904db0b50781bb7fff9b14b817b14f5af03e43d1643f"
+  }
+]

@@ -15,7 +15,7 @@ USER_AGENT = 'Mozilla/5.0 TestBrowser/140.0'
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class CheckinTests(unittest.TestCase):
+class OfflineCase(unittest.TestCase):
     def setUp(self):
         self.env = patch.dict(os.environ, {
             'GLADOS_COOKIES': 'session=account-one',
@@ -30,6 +30,11 @@ class CheckinTests(unittest.TestCase):
         self.network = patch.object(requests.Session, 'send', side_effect=AssertionError('Unexpected HTTP request'))
         self.network.start()
         self.addCleanup(self.network.stop)
+        self.now = 100.0
+        def sleep(seconds):
+            self.now += seconds
+        self.sleep = self.enterContext(patch.object(checkin.time, 'sleep', side_effect=sleep))
+        self.monotonic = self.enterContext(patch.object(checkin.time, 'monotonic', side_effect=lambda: self.now))
 
     def fake_transport(self, codes=None, captured=None):
         codes = codes or {}
@@ -37,13 +42,16 @@ class CheckinTests(unittest.TestCase):
         def send(session, request, **kwargs):
             if captured is not None:
                 captured.append(request)
-            if request.url.endswith('/checkin'):
+            if request.url.endswith('/checkin/challenge'):
+                payload = {'code': 0, 'nonce': 'synthetic-nonce', 'ttl': 300000}
+            elif request.url.endswith('/checkin'):
                 code = codes.get((request.headers['Cookie'], request.url.split('/')[2]), 0)
-                payload = {'code': code, 'message': 'Automated check-in detected. Please sign in again to continue.' if code == 4 else 'test result', 'points': 1}
+                message = 'Automated check-in detected. Please sign in again to continue.' if code == 4 else 'Repeat! Please Try Tomorrow!' if code == 1 else 'test result'
+                payload = {'code': code, 'message': message, 'points': 1}
             elif request.url.endswith('/status'):
                 payload = {'code': 0, 'data': {'leftDays': 30}}
             elif request.url.endswith('/points'):
-                payload = {'code': 0, 'points': 0}
+                payload = {'code': 0, 'points': 500}
             else:
                 payload = {'code': 0, 'message': 'test exchange'}
             response = requests.Response()
@@ -58,6 +66,7 @@ class CheckinTests(unittest.TestCase):
         with self.fake_transport(codes), patch.object(checkin.PushService, 'send', return_value=False):
             return checkin.main()
 
+class CheckinTests(OfflineCase):
     def test_config_uses_trimmed_user_agent(self):
         os.environ['GLADOS_USER_AGENT'] = '  ' + USER_AGENT + '  '
         self.assertEqual(checkin.Config().user_agent, USER_AGENT)
@@ -76,14 +85,17 @@ class CheckinTests(unittest.TestCase):
         with self.fake_transport(captured=captured):
             checker = checkin.Checker(checkin.Config())
             checker.checkin_all()
-        self.assertEqual(len(captured), 8)
+        self.assertEqual(len(captured), 9)
         for request in captured:
             self.assertEqual(request.headers['User-Agent'], USER_AGENT)
             self.assertEqual(request.headers['Cookie'], 'session=account-one')
             self.assertEqual(request.headers['Origin'], 'https://' + request.url.split('/')[2])
             if request.method == 'POST':
                 self.assertEqual(request.headers['Content-Type'], 'application/json')
-                expected = {'token': request.url.split('/')[2]} if request.url.endswith('/checkin') else {'planType': 'plan500'}
+                domain = request.url.split('/')[2]
+                expected = {'token': domain} if request.url.endswith('/checkin') else {'planType': 'plan500'}
+                if request.url.endswith('/checkin') and domain == 'glados.cloud':
+                    expected.update(nonce='synthetic-nonce', proof='95d98116667d20076de5e31eeba57cb65dac0e9be21afb32263bac1178699533', tsState='off')
                 self.assertEqual(json.loads(request.body), expected)
 
     def test_success_returns_zero(self):
