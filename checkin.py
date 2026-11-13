@@ -102,6 +102,7 @@ class Config:
     ENV_EXCHANGE_PLAN = "GLADOS_EXCHANGE_PLAN"
     ENV_VERBOSE = "GLADOS_VERBOSE"
     ENV_USER_AGENT = "GLADOS_USER_AGENT"
+    ENV_MODE = "GLADOS_CHECKIN_MODE"
 
     DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36"
 
@@ -112,7 +113,7 @@ class Config:
     DEFAULT_VERBOSE = False
 
     """默认域名"""
-    DOMAINS = ["glados.cloud", "railgun.info"]
+    DOMAINS = ["glados.cloud"]
 
     """兑换计划列表"""
     EXCHANGE_PLANS = {
@@ -127,6 +128,9 @@ class Config:
         self.exchange_plan: str = self.DEFAULT_EXCHANGE_PLAN
         self.verbose: bool = self.DEFAULT_VERBOSE
         self.user_agent: str = self.DEFAULT_USER_AGENT
+        self.checkin_mode = "browser"
+        self.browser_headless = True
+        self.verify_only = False
         self._load_config()
 
     def _load_config(self) -> None:
@@ -135,6 +139,11 @@ class Config:
         raw_cookies_env: Optional[str] = os.environ.get(self.ENV_COOKIES)
         exchange_plan_env: Optional[str] = os.environ.get(self.ENV_EXCHANGE_PLAN)
         verbose_env: Optional[str] = os.environ.get(self.ENV_VERBOSE)
+        self.checkin_mode = os.environ.get(self.ENV_MODE, "browser").strip().lower() or "browser"
+        if self.checkin_mode not in ("http", "browser"):
+            raise ValueError("GLADOS_CHECKIN_MODE 必须为 http 或 browser")
+        self.browser_headless = os.environ.get("GLADOS_BROWSER_HEADLESS", "true").strip().lower() not in ("false", "0", "no")
+        self.verify_only = os.environ.get("GLADOS_VERIFY_ONLY", "false").strip().lower() in ("true", "1", "yes")
         user_agent_env = os.environ.get(self.ENV_USER_AGENT, "").strip()
         self.user_agent = user_agent_env or self.DEFAULT_USER_AGENT
         if not user_agent_env:
@@ -169,7 +178,7 @@ class Config:
         logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_PUSH_KEY} {'已设置' if push_key_env else '未设置'}。")
         logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_EXCHANGE_PLAN}: {self.exchange_plan}。")
 
-        if verbose_env is not None:
+        if verbose_env:
             verbose_env_lower = verbose_env.lower()
             if verbose_env_lower in ["true", "1", "yes", "y"]:
                 self.verbose = True
@@ -179,6 +188,7 @@ class Config:
                 logger.warning(f"{LogEmoji.WARNING} 环境变量 '{self.ENV_VERBOSE}' 的值 '{verbose_env}' 无效，将使用默认值 {self.DEFAULT_VERBOSE}。")
 
         logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_VERBOSE}: {self.verbose}。")
+        logger.info(f"{LogEmoji.INFO} 签到方式: {self.checkin_mode}；仅验证: {self.verify_only}。")
 
 
 class API:
@@ -192,6 +202,8 @@ class API:
     EXCHANGE_URL = APIEndpoint.EXCHANGE.value
 
     def __init__(self, domain: str, cookie_index: int = 0, verbose: bool = False, user_agent: str = Config.DEFAULT_USER_AGENT):
+        if domain != "glados.cloud":
+            raise ValueError("当前仅允许访问 glados.cloud，Railgun 已停用")
         self.domain: str = domain
         self.cookie_index: int = cookie_index
         self.verbose: bool = verbose
@@ -269,8 +281,6 @@ class API:
 
     def _get_checkin_data(self, cookies: str) -> Dict[str, str]:
         """按各站点当前官网流程生成请求；GLaDOS 验证失败时不降级。"""
-        if self.domain == "railgun.info":
-            return {"token": self.domain}
         if self.domain != "glados.cloud":
             raise ValueError("未核对该域名的签到流程")
 
@@ -315,7 +325,13 @@ class API:
         url = self._get_full_url(self.CHECKIN_URL)
         checkin_data = self._get_checkin_data(cookies)
         response = self._make_request(url, "POST", checkin_data, cookies)
+        if response is None:
+            return self.parse_checkin_result({"code": -2, "message": "网络请求失败"})
+        return self.parse_checkin_result(response.json(), checkin_data)
 
+    def parse_checkin_result(self, data, checkin_data=None):
+        """共用 HTTP 和浏览器返回的业务结果判定。"""
+        checkin_data = checkin_data or {}
         result = {
             "status": "签到失败",
             "points": "0",
@@ -323,8 +339,7 @@ class API:
             "code": CheckinStatus.FAILURE,
         }
 
-        if response:
-            data = response.json()
+        if data is not None:
             if not isinstance(data, dict):
                 raise ValueError("签到响应格式无效")
             code = data.get("code", -2)
@@ -527,7 +542,19 @@ class Checker:
 
             # 2. 签到
             self._log(cookie_idx, domain, LogEmoji.CHECKIN, "执行签到")
-            checkin_result = api.checkin(cookie)
+            if self.config.checkin_mode == "browser":
+                from browser_checkin import run_browser_checkin, BrowserCheckinError
+                try:
+                    payload, cookie = run_browser_checkin(
+                        cookie, self.config.user_agent,
+                        headless=self.config.browser_headless, notify=logger.info,
+                    )
+                    checkin_result = api.parse_checkin_result(payload)
+                except BrowserCheckinError as error:
+                    result.message = str(error)
+                    return result
+            else:
+                checkin_result = api.checkin(cookie)
             result.status = checkin_result["status"]
             result.code = checkin_result.get("code", CheckinStatus.FAILURE)
             result.message = checkin_result.get("message", "")
@@ -542,7 +569,9 @@ class Checker:
 
             # 4. 执行兑换
             required_points = self.config.EXCHANGE_PLANS.get(self.config.exchange_plan, 500)
-            if points_num >= required_points:
+            if self.config.verify_only:
+                result.exchange = "验证模式，跳过兑换"
+            elif points_num >= required_points:
                 self._log(
                     cookie_idx, domain, LogEmoji.EXCHANGE,
                     f"开始兑换 {self.config.exchange_plan} (需要 {required_points} 积分)",
@@ -554,7 +583,7 @@ class Checker:
         return result
 
     def has_failures(self) -> bool:
-        """每个 Cookie 至少在一个域名签到成功或今日已签到，才算通过。"""
+        """每个 Cookie 在 GLaDOS 签到成功或今日已签到，才算通过。"""
         accepted_cookies = {
             result.cookie_index
             for result in self.results
@@ -632,7 +661,7 @@ def main() -> int:
 
     # 4. 发送推送
     logger.info(f"{LogEmoji.START} 步骤 4: 发送推送")
-    if config is not None:
+    if config is not None and not config.verify_only:
         push_service = PushService(config)
         push_service.send(title, content)
     logger.info(f"{LogEmoji.END} 签到完成")

@@ -20,6 +20,7 @@ class OfflineCase(unittest.TestCase):
         self.env = patch.dict(os.environ, {
             'GLADOS_COOKIES': 'session=account-one',
             'GLADOS_USER_AGENT': USER_AGENT,
+            'GLADOS_CHECKIN_MODE': 'http',
         }, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -80,12 +81,14 @@ class CheckinTests(OfflineCase):
                     os.environ['GLADOS_USER_AGENT'] = value
                 self.assertEqual(checkin.Config().user_agent, checkin.Config.DEFAULT_USER_AGENT)
 
-    def test_headers_and_json_reach_prepared_requests_on_both_domains(self):
+    def test_headers_and_json_reach_only_glados(self):
         captured = []
         with self.fake_transport(captured=captured):
             checker = checkin.Checker(checkin.Config())
             checker.checkin_all()
-        self.assertEqual(len(captured), 9)
+        self.assertEqual(len(captured), 5)
+        self.assertEqual(checkin.Config.DOMAINS, ['glados.cloud'])
+        self.assertTrue(all(r.url.startswith('https://glados.cloud/') for r in captured))
         for request in captured:
             self.assertEqual(request.headers['User-Agent'], USER_AGENT)
             self.assertEqual(request.headers['Cookie'], 'session=account-one')
@@ -109,24 +112,18 @@ class CheckinTests(OfflineCase):
         codes = {('session=account-one', domain): 4 for domain in checkin.Config.DOMAINS}
         self.assertEqual(self.run_main(codes), 1)
 
-    def test_one_accepted_domain_is_enough_for_a_cookie(self):
-        for accepted in checkin.Config.DOMAINS:
-            with self.subTest(accepted=accepted):
-                codes = {('session=account-one', domain): -2 for domain in checkin.Config.DOMAINS if domain != accepted}
-                self.assertEqual(self.run_main(codes), 0)
+    def test_railgun_cannot_be_accessed(self):
+        with self.assertRaises(ValueError):
+            checkin.API('railgun.info')
 
     def test_each_cookie_must_have_an_accepted_domain(self):
         os.environ['GLADOS_COOKIES'] += '&session=account-two'
         codes = {('session=account-two', domain): 4 for domain in checkin.Config.DOMAINS}
         self.assertEqual(self.run_main(codes), 1)
 
-    def test_accounts_can_succeed_on_different_domains(self):
+    def test_all_accounts_must_succeed_on_glados(self):
         os.environ['GLADOS_COOKIES'] += '&session=account-two'
-        codes = {
-            ('session=account-one', 'railgun.info'): -2,
-            ('session=account-two', 'glados.cloud'): -2,
-        }
-        self.assertEqual(self.run_main(codes), 0)
+        self.assertEqual(self.run_main(), 0)
 
     def test_missing_cookies_returns_one(self):
         os.environ.pop('GLADOS_COOKIES')

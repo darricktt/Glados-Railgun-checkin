@@ -1,5 +1,19 @@
 # Glados自动签到
 
+当前版本只访问 `glados.cloud`，已停用 Railgun。默认通过标准 Chromium 打开官网签到页面、点击 `Checkin` 按钮，并以官网接口的业务结果判断成功。官网负责获取 challenge、执行 Turnstile 和提交验证；脚本不生成或伪造 Turnstile token。
+
+GitHub Actions 会自动安装锁定的运行依赖和 Chromium。浏览器验证可以无感通过，也可能需要人工操作；云端运行不保证通过交互验证。失败时保留原因并返回非零退出码，不自动退回 HTTP 方式。
+
+本机可见浏览器模式：先安装 `python -m pip install -r requirements.lock` 和 `python -m playwright install chromium`，在本机环境设置 `GLADOS_COOKIES`、`GLADOS_USER_AGENT` 后运行：
+
+```sh
+GLADOS_CHECKIN_MODE=browser GLADOS_BROWSER_HEADLESS=false GLADOS_VERIFY_ONLY=true python checkin.py
+```
+
+浏览器打开后可按官网提示完成验证，默认最多等待两分钟。`GLADOS_VERIFY_ONLY=true` 会跳过兑换和推送；确认正常后可以移除此设置。GitHub 手动运行时也可勾选 `verify_only`。如需保留旧 HTTP 请求方式，可设置 Actions 仓库 Variable `GLADOS_CHECKIN_MODE=http`，但 HTTP 模式无法完成 Turnstile。
+
+离线测试：运行 `python -m unittest discover -s tests -v`；设置 `GLADOS_RUN_BROWSER_TESTS=1` 后还会运行真实 Chromium 的模拟页面测试，所有请求均被拦截，不接触真实账号。依赖来源与准确版本见 `requirements.txt`、`requirements.lock`，Playwright 来源为 [Microsoft Playwright](https://github.com/microsoft/playwright-python)。
+
 ## 食用方式：
 
 ### 注册一个GLaDOS的账号([注册地址](https://glados.space/landing/0A58E-NV28S-6U3QV-33VMG))
@@ -78,13 +92,13 @@
 ## 问题排查与定位
 - 大家可以通过查询 actions 中的 running checkin 日志快速定位问题，有其他问题提交issue。
 
-- HTTP 200 或 Actions 步骤执行完毕不等于签到成功。脚本按 Cookie 判定退出状态：每个 Cookie 至少在 `glados.cloud`、`railgun.info` 中的一个域名成功或今日已签到，才返回 `0`；任一 Cookie 在两个域名均失败、没有 Cookie 或执行异常时返回 `1`，Actions 显示失败。汇总中的成功／失败／重复数量仍按域名任务统计。
+- HTTP 200 或 Actions 步骤执行完毕不等于签到成功。每个 Cookie 都必须在 `glados.cloud` 成功或今日已签到，才返回 `0`；任一账号失败、没有 Cookie 或执行异常时返回 `1`，Actions 显示失败。
 - 兑换请求以 `application/json` 发送 `planType`，避免服务端因缺少 JSON Content-Type 返回 `Plan type is required`。
-- GLaDOS 每次签到先获取新的 challenge，等待至少 2.5 秒（脚本预留为 2.7 秒）后，向同一域名提交 nonce／proof。验证缺失、无效、过期或要求 Turnstile 时明确失败，不退回仅发送 token 的旧流程。Railgun 当前官网仍只发送 token，脚本按其独立流程处理。
-- 日志提示 Turnstile 时，请到官网完成当次签到；刷新 Cookie 或改 UA 不能代替该验证。失败原因会进入汇总，脚本不提交伪造的 Turnstile token。
+- HTTP 模式每次签到获取新 challenge，等待至少 2.5 秒（脚本预留为 2.7 秒）后，向同一域名提交 nonce／proof。验证无效或要求 Turnstile 时明确失败。默认浏览器模式由官网页面执行完整流程。
+- 浏览器模式仍提示验证失败时，可使用本机可见浏览器完成当次签到。刷新 Cookie 或改 UA 不能代替验证；失败原因会进入汇总。
 - 首次签到获得 1／2 分仍算成功。GLaDOS 官网根据服务端返回的 `breakdown.freeCap` 显示免费账号上限；适配流程不承诺固定奖励或补发积分。请核对官网积分流水和账号提示。
 - 只有签到成功或正常重复，且积分查询通过、余额达到当前兑换阈值时，脚本才发起兑换。
-- 离线验证：安装 workflow 中已有的 `requests`、`pypushdeer` 依赖后运行 `python -m unittest discover -s tests -v`。测试使用模拟响应，不签到、不兑换、不发送推送。
+- 离线验证使用模拟响应，不签到、不兑换、不发送推送。请按本文开头的依赖与测试说明运行。
 
   <img width="1684" height="844" alt="image" src="https://github.com/user-attachments/assets/45348a5f-43e4-45f5-8fdf-ce84d343b30d" />
 

@@ -61,14 +61,6 @@ class ChallengeTests(OfflineCase):
             self.assertEqual(r.headers['User-Agent'], USER_AGENT)
             self.assertEqual(r.headers['Cookie'], 'session=account-one')
 
-    def test_railgun_uses_its_current_token_only_flow(self):
-        with self.install_transport(), checkin.API('railgun.info') as api:
-            result = api.checkin('session=account-one')
-        self.assertEqual(result['code'], checkin.CheckinStatus.SUCCESS)
-        self.assertEqual(len(self.sent), 1)
-        self.assertEqual(json.loads(self.sent[0].body), {'token': 'railgun.info'})
-        self.sleep.assert_not_called()
-
     def test_vectors_from_original_official_javascript_module(self):
         vectors = json.loads((Path(__file__).parent / 'fixtures' / 'checkin-proof-vectors.json').read_text())
         for vector in vectors:

@@ -2,6 +2,11 @@ name: auto check
 
 on:
   workflow_dispatch:
+    inputs:
+      verify_only:
+        description: '只验证签到，跳过积分兑换和通知'
+        type: boolean
+        default: false
   push:
     branches: [ main ]
     paths-ignore:
@@ -12,8 +17,9 @@ on:
 
 jobs:
   build:
-    name: glados/railgun checkin
+    name: glados checkin
     runs-on: ubuntu-latest
+    timeout-minutes: 10
       
     permissions:
       contents: read
@@ -39,9 +45,8 @@ jobs:
     # 安装 python 库
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install requests
-        pip install pypushdeer
+        python -m pip install -r requirements.lock
+        python -m playwright install --with-deps chromium
 
     # 执行 签到脚本
     - name: Running checkin
@@ -53,6 +58,9 @@ jobs:
         GLADOS_USER_AGENT: ${{ secrets.GLADOS_USER_AGENT }}
         GLADOS_EXCHANGE_PLAN: ${{ secrets.GLADOS_EXCHANGE_PLAN }}
         GLADOS_VERBOSE: ${{ secrets.GLADOS_VERBOSE }}
+        GLADOS_CHECKIN_MODE: ${{ vars.GLADOS_CHECKIN_MODE || 'browser' }}
+        GLADOS_BROWSER_HEADLESS: 'true'
+        GLADOS_VERIFY_ONLY: ${{ inputs.verify_only && 'true' || 'false' }}
 
     - name: Keep alive
       if: ${{ !cancelled() }}
