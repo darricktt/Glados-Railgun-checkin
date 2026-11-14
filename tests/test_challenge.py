@@ -169,6 +169,16 @@ class ChallengeTests(OfflineCase):
                 with self.install_transport(checkin_body={'code': 1, 'repeated': repeated, 'message': 'challenge validation failed'}):
                     self.assertEqual(self.result()['code'], checkin.CheckinStatus.FAILURE)
 
+    def test_observed_real_repeat_message_is_accepted(self):
+        with self.install_transport(checkin_body={'code': 1, 'message': "Today's observation logged. Return tomorrow for more points."}):
+            result = self.result()
+            self.assertEqual(result['code'], checkin.CheckinStatus.REPEAT)
+            self.assertEqual(result['points'], '0')
+
+    def test_failure_with_observation_words_is_not_accepted(self):
+        with self.install_transport(checkin_body={'code': 1, 'message': "Today's observation failed. Return tomorrow for more points."}):
+            self.assertEqual(self.result()['code'], checkin.CheckinStatus.FAILURE)
+
     def test_bool_code_is_not_zero_and_string_repeat_is_not_true(self):
         with self.install_transport(checkin_body={'code': False, 'message': 'invalid'}):
             self.assertEqual(self.result()['code'], checkin.CheckinStatus.FAILURE)

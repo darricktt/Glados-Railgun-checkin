@@ -124,6 +124,13 @@ class ChromiumFixtureTests(unittest.TestCase):
             browser_checkin._checkin_in_context(context, headless=True, timeout_ms=3000, notify=lambda _: None)
         self.assertFalse(any(method == 'POST' for method, _ in observed))
 
+    def test_live_repeat_response_maps_to_repeat(self):
+        context, observed = self.fixture(body={'code': 1, 'message': "Today's observation logged. Return tomorrow for more points."})
+        payload, cookie = browser_checkin._checkin_in_context(context, headless=True, timeout_ms=3000, notify=lambda _: None)
+        with checkin.API('glados.cloud') as api:
+            result = api.parse_checkin_result(payload)
+        self.assertEqual(result['code'], checkin.CheckinStatus.REPEAT)
+
     def test_headless_turnstile_rejection_returns_manual_action(self):
         context, observed = self.fixture(body={'code': 4, 'reason': 'turnstile', 'message': 'Verification required'})
         with self.assertRaisesRegex(browser_checkin.BrowserCheckinError, '验证'):

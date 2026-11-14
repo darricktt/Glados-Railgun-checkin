@@ -353,9 +353,12 @@ class API:
             message = message[:500]
             points = str(data.get("points", 0))
             repeat = code == 0 and data.get("repeated") is True or (
-                code == 1 and any(marker in message.lower() for marker in (
-                    "repeat! please try tomorrow", "already checked in", "already checked-in", "今日已签到", "今天已经签到",
-                ))
+                code == 1 and (
+                    message.strip().lower() == "today's observation logged. return tomorrow for more points."
+                    or any(marker in message.lower() for marker in (
+                        "repeat! please try tomorrow", "already checked in", "already checked-in", "今日已签到", "今天已经签到",
+                    ))
+                )
             )
 
             if type(code) is int and code in (0, 1) and repeat:

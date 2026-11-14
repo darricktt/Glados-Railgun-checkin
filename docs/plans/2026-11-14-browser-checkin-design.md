@@ -11,3 +11,9 @@
 固定依赖声明为 `requirements.txt`，完整运行依赖锁定到 `requirements.lock`。本地环境临时安装 Python 3.13、Playwright 1.65.1 及其 Chromium 1254；完成后删除临时克隆、虚拟环境和下载的浏览器。GitHub 仍使用已有的离线测试 workflow，并新增真实 Chromium 模拟页面测试，所有网络请求在测试中拦截。
 
 验证覆盖单站点、Cookie 值与域名作用域、官网按钮定位、业务结果解析、敏感字段脱敏、失效会话、Turnstile 拒绝、失败不降级及仅验证模式。一次云端仅验证运行用于观察当前账号是否能通过真实官网验证；该结果与离线测试结论分开记录，不保证未来规则不变。
+
+## 真实运行记录
+
+提交 `1d74105fd4d7587209c9b41abb370d0ab8561ee0` 的[云端仅验证运行](https://github.com/darricktt/Glados-Railgun-checkin/actions/runs/43471521375)使用浏览器模式，只访问 GLaDOS，约 93 秒后收到 `code=1` 以及 `Today's observation logged. Return tomorrow for more points.`。初版解析器未识别该精确文案，因此错误返回失败；后续将这条实际观察到的响应归类为正常重复，并增加 API 与真实浏览器模拟页面回归用例。
+
+该运行没有兑换或发送推送。重复签到响应不能证明下一次首次签到一定通过 Turnstile，也不能证明新增积分；需继续观察既有定时任务的首次签到结果，不能把本次记录描述为验证已绕过或首次签到验收完成。
