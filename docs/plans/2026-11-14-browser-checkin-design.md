@@ -17,3 +17,5 @@
 提交 `1d74105fd4d7587209c9b41abb370d0ab8561ee0` 的[云端仅验证运行](https://github.com/darricktt/Glados-Railgun-checkin/actions/runs/43471521375)使用浏览器模式，只访问 GLaDOS，约 93 秒后收到 `code=1` 以及 `Today's observation logged. Return tomorrow for more points.`。初版解析器未识别该精确文案，因此错误返回失败；后续将这条实际观察到的响应归类为正常重复，并增加 API 与真实浏览器模拟页面回归用例。
 
 该运行没有兑换或发送推送。重复签到响应不能证明下一次首次签到一定通过 Turnstile，也不能证明新增积分；需继续观察既有定时任务的首次签到结果，不能把本次记录描述为验证已绕过或首次签到验收完成。
+
+2026 年 11 月 15 日，文案修复后的 `0d6a55320983b1c3f0e4bb8efc9e7bc32367aaa8` 通过[51 项云端离线测试](https://github.com/darricktt/Glados-Railgun-checkin/actions/runs/43690206748)，其中包含实际 Chromium 的模拟页面用例。[再次真实仅验证运行](https://github.com/darricktt/Glados-Railgun-checkin/actions/runs/43690231691)只执行一个 GLaDOS 任务，约 93 秒后被官网 Turnstile 验证拒绝；脚本正确返回失败，没有兑换或发送推送。因此浏览器路径已经具备正常执行官网流程的能力，但云端无人值守签到尚未通过真实验收。后续需要在本机可见浏览器完成实际交互验证，不能把离线测试通过或此前的重复签到当作替代证据。
